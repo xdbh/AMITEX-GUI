@@ -1,0 +1,106 @@
+name: Release
+
+# Builds AMITEX-GUI for macOS (Apple Silicon), Linux (x86_64), and Windows (x86_64)
+# whenever a version tag (e.g. v0.1.0) is pushed, and attaches the packaged binaries
+# to a GitHub Release.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: AMITEX-GUI-macos-arm64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: AMITEX-GUI-linux-x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: AMITEX-GUI-windows-x86_64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # eframe/egui + rfd's native file dialog need these to compile on Linux.
+      - name: Install Linux build dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libclang-dev libgtk-3-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxkbcommon-dev libssl-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build (release)
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package (macOS .app bundle)
+        if: matrix.os == 'macos-latest'
+        run: |
+          APP=AMITEX-GUI.app
+          mkdir -p "$APP/Contents/MacOS"
+          cp "target/${{ matrix.target }}/release/AMITEX-GUI" "$APP/Contents/MacOS/AMITEX-GUI"
+          cp packaging/Info.plist "$APP/Contents/Info.plist"
+          chmod +x "$APP/Contents/MacOS/AMITEX-GUI"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "${{ matrix.name }}.zip"
+
+      - name: Package (Linux tarball)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/AMITEX-GUI" dist/
+          tar -czf "${{ matrix.name }}.tar.gz" -C dist AMITEX-GUI
+
+      - name: Package (Windows zip)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item "target/${{ matrix.target }}/release/AMITEX-GUI.exe" dist/
+          Compress-Archive -Path dist/AMITEX-GUI.exe -DestinationPath "${{ matrix.name }}.zip"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: |
+            ${{ matrix.name }}.zip
+            ${{ matrix.name }}.tar.gz
+          if-no-files-found: ignore
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          draft: false
+          generate_release_notes: true

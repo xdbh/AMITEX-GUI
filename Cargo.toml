@@ -1,0 +1,20 @@
+[package]
+name = "AMITEX-GUI"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.103"
+chrono = "0.4.45"
+config = "0.15.25"
+directories = "6.0.0"
+eframe = { version = "0.35.0", features = ["persistence"] }
+egui = "0.35.0"
+egui_plot = "0.36.0"
+ndarray = "0.17.2"
+ndarray-linalg = "0.18.1"
+quick-xml = "0.41.0"
+rfd = "0.17.2"
+serde = { version = "1.0.228", features = ["derive"] }
+tokio = "1.53.0"
+vtkio = "0.6.3"
