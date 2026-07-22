@@ -21,8 +21,7 @@ solves — one per canonical unit-strain direction in Voigt notation (`xx`, `yy`
 
 That's the whole feature set. There's no visualization of stress/strain fields, no run
 history/config persistence, no per-material zone (`-nz`) support, and no other simulation modes
-— the mode selector only has the one option. See [`PIPELINE_SCOPE.md`](PIPELINE_SCOPE.md) for
-the detailed design notes and what's explicitly out of scope for now.
+— the mode selector only has the one option.
 
 ## Requirements
 
@@ -59,6 +58,19 @@ cp packaging/Info.plist AMITEX-GUI.app/Contents/Info.plist
   `amitex_fftp`'s own `AMITEX_PATH` environment variable to resolve their shared library. The
   app derives this automatically from the `amitex_fftp` binary path you select, provided it
   follows AMITEX's documented `<root>/libAmitex/bin/amitex_fftp` layout.
+
+### First run, if you downloaded a release binary
+
+Downloaded binaries aren't signed with a paid platform certificate, so each OS shows a one-time
+trust warning on first launch — this is normal, not a broken download:
+
+- **macOS**: the release `.app` is ad-hoc signed (no paid Developer ID), so Gatekeeper shows
+  "unidentified developer" rather than refusing outright. Right-click the app → **Open** (or
+  System Settings → Privacy & Security → **Open Anyway**) once, then it launches normally.
+- **Windows**: SmartScreen will show "Windows protected your PC" on first run of the unsigned
+  `.exe`. Click **More info** → **Run anyway**.
+- **Linux**: the extracted binary should already be executable; if not, `chmod +x AMITEX-GUI`
+  before running it.
 
 ## Releases
 

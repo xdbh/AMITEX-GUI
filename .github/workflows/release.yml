@@ -64,6 +64,14 @@ jobs:
           cp "target/${{ matrix.target }}/release/AMITEX-GUI" "$APP/Contents/MacOS/AMITEX-GUI"
           cp packaging/Info.plist "$APP/Contents/Info.plist"
           chmod +x "$APP/Contents/MacOS/AMITEX-GUI"
+          # Ad-hoc signature (no paid Developer ID / no secrets needed): without any
+          # signature at all, Gatekeeper refuses a downloaded app outright ("is damaged,
+          # move to Trash", no bypass). Ad-hoc signing gives it something to check, which
+          # downgrades that to the standard "unidentified developer" prompt (right-click
+          # -> Open, or System Settings -> Privacy & Security -> Open Anyway). Full
+          # elimination of that prompt needs a paid Apple Developer ID + notarization,
+          # which is a separate, user-driven decision (real identity/cert required).
+          codesign --force --deep --sign - "$APP"
           ditto -c -k --sequesterRsrc --keepParent "$APP" "${{ matrix.name }}.zip"
 
       - name: Package (Linux tarball)
@@ -71,6 +79,7 @@ jobs:
         run: |
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/AMITEX-GUI" dist/
+          chmod +x dist/AMITEX-GUI
           tar -czf "${{ matrix.name }}.tar.gz" -C dist AMITEX-GUI
 
       - name: Package (Windows zip)
