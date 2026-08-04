@@ -275,18 +275,17 @@ fn check_executable(path: &Path) -> Result<(), String> {
 pub(crate) fn check_permissions(
     material_id_vtk: &Path,
     zone_id_vtk: Option<&Path>,
-    mat_xml: &Path,
-    algo_xml: &Path,
     env_script: &Path,
     amitex_path: &Path,
     mpirun_path: &Path,
     env_vars: &[(String, String)],
 ) -> Vec<String> {
     let mut problems = Vec::new();
+    // Material XML (-m) and Algorithm XML (-a) aren't user-browsed files anymore — they're
+    // generated from the Configuration tab's editors and written fresh into run_dir right
+    // before the run starts, so there's nothing pre-existing to check permissions on here.
     let mut readable_inputs = vec![
         ("Material ID VTK (-nm)", material_id_vtk),
-        ("Material XML (-m)", mat_xml),
-        ("Algorithm XML (-a)", algo_xml),
         ("env_amitex.sh (or equivalent)", env_script),
     ];
     if let Some(zone_id_vtk) = zone_id_vtk {

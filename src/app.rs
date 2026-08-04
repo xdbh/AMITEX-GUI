@@ -3,6 +3,9 @@ pub(crate) use crate::pipeline::SimulationModes;
 use crate::pipeline::runner::{PipelineConfig, RunEvent};
 use crate::postproc;
 use crate::postproc::moduli::{self, ElasticModuli};
+use crate::preproc;
+use crate::preproc::algorithm::AlgorithmSettings;
+use crate::preproc::materials::{LawKind, MaterialEntry};
 use crate::viewer3d;
 use directories::{ProjectDirs, UserDirs};
 use eframe::{egui, egui_glow, glow};
@@ -84,8 +87,6 @@ struct PersistedConfig {
     custom_name: bool,
     zone_id_vtk: String,
     material_id_vtk: String,
-    algorithm: String,
-    materials_xml: String,
     env_script: String,
     mpirun_path: String,
     extra_args: String,
@@ -108,8 +109,6 @@ impl AmitexGui {
                 custom_name: persisted.custom_name,
                 zone_id_vtk: persisted.zone_id_vtk,
                 material_id_vtk: persisted.material_id_vtk,
-                algorithm: persisted.algorithm,
-                materials_xml: persisted.materials_xml,
                 env_script: persisted.env_script,
                 mpirun_path: persisted.mpirun_path,
                 extra_args: persisted.extra_args,
@@ -132,14 +131,20 @@ impl AmitexGui {
             self.run_error = Some("Select a Material ID VTK file first".to_string());
             return;
         };
-        let Some(mat_xml) = non_empty_path(&self.config_tab.materials_xml) else {
-            self.run_error = Some("Select a Material XML file first".to_string());
+        if let Some(err) = &self.config_tab.materials.error {
+            self.run_error = Some(err.clone());
             return;
+        }
+        let mat_xml_content = match preproc::materials::generate_mat_xml(&self.config_tab.materials.entries)
+        {
+            Ok(xml) => xml,
+            Err(err) => {
+                self.run_error = Some(err.to_string());
+                return;
+            }
         };
-        let Some(algo_xml) = non_empty_path(&self.config_tab.algorithm) else {
-            self.run_error = Some("Select an Algorithm XML file first".to_string());
-            return;
-        };
+        let algo_xml_content = self.config_tab.algorithm_settings.generate_xml();
+
         let Some(env_script) = non_empty_path(&self.config_tab.env_script) else {
             self.run_error = Some("Select an env_amitex.sh (or equivalent) script first".to_string());
             return;
@@ -179,8 +184,6 @@ impl AmitexGui {
         let problems = pipeline::runner::check_permissions(
             &material_id_vtk,
             zone_id_vtk.as_deref(),
-            &mat_xml,
-            &algo_xml,
             &env_script,
             &amitex_path,
             &mpirun_path,
@@ -197,6 +200,23 @@ impl AmitexGui {
             return;
         };
         let run_dir = dirs.data_dir().join("runs").join(&self.config_tab.name);
+        if let Err(err) = std::fs::create_dir_all(&run_dir) {
+            self.run_error = Some(format!("creating {}: {err}", run_dir.display()));
+            return;
+        }
+        // Generated (not user-browsed) from the Configuration tab's material/algorithm
+        // editors — written into run_dir so amitex_fftp can be pointed at them like any
+        // other input file, and so "Save" picks them up alongside the rest of the run.
+        let mat_xml = run_dir.join("mat.xml");
+        if let Err(err) = std::fs::write(&mat_xml, &mat_xml_content) {
+            self.run_error = Some(format!("writing {}: {err}", mat_xml.display()));
+            return;
+        }
+        let algo_xml = run_dir.join("algo.xml");
+        if let Err(err) = std::fs::write(&algo_xml, &algo_xml_content) {
+            self.run_error = Some(format!("writing {}: {err}", algo_xml.display()));
+            return;
+        }
 
         let rx = pipeline::runner::spawn_pipeline(PipelineConfig {
             run_dir: run_dir.clone(),
@@ -297,13 +317,30 @@ impl AmitexGui {
                 }
             });
 
+        // E/nu/G/Zener A assume cubic/isotropic symmetry (see the legacy runs2moduli.py this
+        // was ported from: "En considerant sym. cubique"); with an orthotropic material in
+        // the mix they're not physically meaningful, even though C/S themselves are still
+        // correct regardless of material symmetry.
+        let all_isotropic = self
+            .config_tab
+            .materials
+            .entries
+            .iter()
+            .all(|m| m.law == LawKind::ElasticIsotropic);
         match &state.moduli {
             Some(Ok(moduli)) => {
                 ui.separator();
-                ui.label(format!("E = {:.4}", moduli.e));
-                ui.label(format!("nu = {:.4}", moduli.nu));
-                ui.label(format!("G = {:.4}", moduli.g));
-                ui.label(format!("Zener A = {:.4}", moduli.zener));
+                if all_isotropic {
+                    ui.label(format!("E = {:.4}", moduli.e));
+                    ui.label(format!("nu = {:.4}", moduli.nu));
+                    ui.label(format!("G = {:.4}", moduli.g));
+                    ui.label(format!("Zener A = {:.4}", moduli.zener));
+                } else {
+                    ui.label(
+                        "E/nu/G/Zener A assume isotropic symmetry, not meaningful here with an \
+                         orthotropic material — see the matrices below.",
+                    );
+                }
                 render_matrix(ui, "matrix_c", "Stiffness matrix C", &moduli.c);
                 render_matrix(ui, "matrix_s", "Compliance matrix S", &moduli.s);
             }
@@ -768,15 +805,10 @@ struct ConfigTab {
     /// AMITEX `-nm` material-ID map — which cells belong to which material/phase.
     material_id_vtk: String,
     simulation_mode: pipeline::SimulationModes,
-    //algorithm
-    algorithm: String,
-    // algorithm_type: AlgorithmType,
-    // convergence_criterion: f64,
-    // convergence_acceleration: bool,
-    //mechanics
-    // filter_type: FilterType,
-    // small_perturbations: bool,
-    materials_xml: String,
+    algorithm_settings: AlgorithmSettings,
+    /// Per-material law/coefficient editor, rebuilt from `material_id_vtk` whenever that
+    /// path changes — replaces browsing to a hand-written `mat.xml`.
+    materials: MaterialsEditor,
     /// Path to the install's `env_amitex.sh`-equivalent environment-setup script. Sourced
     /// (not just read) at run time to resolve `amitex_fftp`'s location and the full
     /// PATH/LD_LIBRARY_PATH/AMITEX_PATH environment it needs — replaces browsing to the
@@ -842,8 +874,15 @@ impl ConfigTab {
             None,
         );
 
-        path_field(ui, "Algorithm:", &mut self.algorithm, &mut self.last_dir, None);
-        path_field(ui, "Material:", &mut self.materials_xml, &mut self.last_dir, None);
+        let material_id_vtk_path = self.material_id_vtk.clone();
+        self.materials.sync(&material_id_vtk_path);
+        section(ui, "Materials", true, |ui| {
+            self.materials.ui(ui);
+        });
+
+        section(ui, "Algorithm Settings", false, |ui| {
+            render_algorithm_settings(ui, &mut self.algorithm_settings);
+        });
 
         ui.separator();
 
@@ -876,6 +915,192 @@ impl ConfigTab {
         });
     }
 }
+
+/// Per-material law/coefficient editor: one row per material ID detected in
+/// `material_id_vtk`, replacing the old "browse to a hand-written mat.xml" field. Rebuilds
+/// `entries` from scratch whenever the VTK path changes — like `MaterialsTab`'s own reload,
+/// this doesn't try to preserve previously entered coefficients across a path change, since a
+/// different VTK generally means a genuinely different set of materials.
+#[derive(Default)]
+struct MaterialsEditor {
+    entries: Vec<MaterialEntry>,
+    /// The `material_id_vtk` text last seen, so a reload only happens when it actually
+    /// changes (mirrors `MaterialsTab::last_seen_path`).
+    last_seen_path: String,
+    error: Option<String>,
+}
+
+impl MaterialsEditor {
+    fn sync(&mut self, material_id_vtk: &str) {
+        if material_id_vtk == self.last_seen_path {
+            return;
+        }
+        self.last_seen_path = material_id_vtk.to_string();
+        self.entries.clear();
+        self.error = None;
+
+        let Some(path) = non_empty_path(material_id_vtk) else {
+            return;
+        };
+        let grid = match crate::postproc::vtkio::read_vtk_cell_scalars(&path) {
+            Ok(grid) => grid,
+            Err(err) => {
+                self.error = Some(err.to_string());
+                return;
+            }
+        };
+        match preproc::materials::detect_material_ids(&grid) {
+            Ok(ids) => {
+                self.entries = ids
+                    .into_iter()
+                    .map(|(vtk_id, num_m)| MaterialEntry {
+                        num_m,
+                        vtk_id,
+                        law: LawKind::default(),
+                        isotropic: Default::default(),
+                        orthotropic: Default::default(),
+                    })
+                    .collect();
+            }
+            Err(err) => self.error = Some(err.to_string()),
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        if let Some(err) = &self.error {
+            ui.colored_label(egui::Color32::RED, err);
+            return;
+        }
+        if self.entries.is_empty() {
+            ui.label("Select a Material ID VTK file above to define materials.");
+            return;
+        }
+        for entry in &mut self.entries {
+            render_material_entry(ui, entry);
+        }
+    }
+}
+
+/// One material's law picker plus whichever coefficient fields its selected law needs.
+fn render_material_entry(ui: &mut egui::Ui, entry: &mut MaterialEntry) {
+    egui::Frame::default()
+        .fill(ui.visuals().extreme_bg_color)
+        .inner_margin(egui::Margin::same(6))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(format!("Material {} (VTK id {}):", entry.num_m, entry.vtk_id));
+                egui::ComboBox::from_id_salt(("material_law", entry.num_m))
+                    .selected_text(entry.law.label())
+                    .show_ui(ui, |ui| {
+                        for law in LawKind::ALL {
+                            ui.selectable_value(&mut entry.law, law, law.label());
+                        }
+                    });
+            });
+
+            match entry.law {
+                LawKind::ElasticIsotropic => {
+                    ui.horizontal(|ui| {
+                        ui.label("E (Young's modulus):");
+                        ui.add(egui::DragValue::new(&mut entry.isotropic.e).speed(1e6));
+                        ui.label("nu (Poisson's ratio):");
+                        ui.add(
+                            egui::DragValue::new(&mut entry.isotropic.nu)
+                                .speed(0.01)
+                                .range(-1.0..=0.5),
+                        );
+                    });
+                }
+                LawKind::ElasticOrthotropic => {
+                    let c = &mut entry.orthotropic;
+                    ui.label("Stiffness matrix (local basis):");
+                    egui::Grid::new(("orthotropic_stiffness", entry.num_m)).show(ui, |ui| {
+                        for (label, value) in [
+                            ("C11", &mut c.c11),
+                            ("C12", &mut c.c12),
+                            ("C13", &mut c.c13),
+                            ("C22", &mut c.c22),
+                            ("C23", &mut c.c23),
+                            ("C33", &mut c.c33),
+                            ("C44", &mut c.c44),
+                            ("C55", &mut c.c55),
+                            ("C66", &mut c.c66),
+                        ] {
+                            ui.label(label);
+                            ui.add(egui::DragValue::new(value).speed(1e6));
+                        }
+                        ui.end_row();
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("e1 (local basis vector):");
+                        for v in &mut c.e1 {
+                            ui.add(egui::DragValue::new(v).speed(0.01));
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("e2 (local basis vector):");
+                        for v in &mut c.e2 {
+                            ui.add(egui::DragValue::new(v).speed(0.01));
+                        }
+                    });
+                }
+                other => {
+                    ui.colored_label(
+                        egui::Color32::YELLOW,
+                        format!(
+                            "\"{}\" isn't implemented yet — pick a different law to run.",
+                            other.label()
+                        ),
+                    );
+                }
+            }
+        });
+}
+
+/// Algorithm-XML fields, matching the schema `AlgorithmSettings::generate_xml` writes out.
+fn render_algorithm_settings(ui: &mut egui::Ui, settings: &mut AlgorithmSettings) {
+    ui.horizontal(|ui| {
+        ui.label("Filter:");
+        egui::ComboBox::from_id_salt("algo_filter")
+            .selected_text(settings.filter.label())
+            .show_ui(ui, |ui| {
+                use crate::preproc::algorithm::FilterType;
+                for filter in [FilterType::Hexa, FilterType::NoFilter, FilterType::Octa] {
+                    ui.selectable_value(&mut settings.filter, filter, filter.label());
+                }
+            });
+    });
+
+    ui.horizontal(|ui| {
+        let mut use_default = settings.convergence_criterion.is_none();
+        ui.checkbox(&mut use_default, "Convergence criterion: Default (1e-4)");
+        if use_default {
+            settings.convergence_criterion = None;
+        } else {
+            let value = settings.convergence_criterion.get_or_insert(1e-4);
+            ui.add(
+                egui::DragValue::new(value)
+                    .speed(1e-5)
+                    .range(1e-12..=1e-3)
+                    .custom_formatter(|v, _| format!("{v:.2e}")),
+            );
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut settings.convergence_acceleration, "Convergence acceleration");
+        if settings.convergence_acceleration {
+            ui.label("modACV:");
+            ui.add(egui::DragValue::new(&mut settings.mod_acv).range(2..=20));
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("Max iterations:");
+        ui.add(egui::DragValue::new(&mut settings.nitermax).range(1..=100_000));
+    });
+}
+
 #[derive(Default)]
 struct RunTab {
     custom_name: bool,
@@ -895,8 +1120,6 @@ impl eframe::App for AmitexGui {
                 custom_name: self.config_tab.custom_name,
                 zone_id_vtk: self.config_tab.zone_id_vtk.clone(),
                 material_id_vtk: self.config_tab.material_id_vtk.clone(),
-                algorithm: self.config_tab.algorithm.clone(),
-                materials_xml: self.config_tab.materials_xml.clone(),
                 env_script: self.config_tab.env_script.clone(),
                 mpirun_path: self.config_tab.mpirun_path.clone(),
                 extra_args: self.config_tab.extra_args.clone(),

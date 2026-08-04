@@ -2,9 +2,8 @@
 //! glow (OpenGL) renderer to display it via `egui::PaintCallback`. There is no 3D-viewport
 //! widget in egui itself, so a `materials.vtk` viewer means drawing the cubes ourselves.
 
-use crate::postproc::vtkio::VtkGrid;
+use crate::postproc::vtkio::{distinct_sorted_values, VtkGrid};
 use eframe::glow::{self, HasContext as _};
-use std::collections::HashSet;
 
 pub(crate) struct Mesh {
     /// Interleaved per vertex: position(3), normal(3), color(3).
@@ -68,14 +67,7 @@ fn material_color(ordinal: usize) -> [f32; 3] {
 pub(crate) fn build_boundary_mesh(grid: &VtkGrid) -> Mesh {
     let (nx, ny, nz) = (grid.nx, grid.ny, grid.nz);
 
-    let mut seen = HashSet::new();
-    let mut ids: Vec<f64> = Vec::new();
-    for &v in &grid.data {
-        if seen.insert(v.to_bits()) {
-            ids.push(v);
-        }
-    }
-    ids.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let ids = distinct_sorted_values(&grid.data);
     let legend: Vec<(f64, [f32; 3])> =
         ids.iter().enumerate().map(|(i, &id)| (id, material_color(i))).collect();
     let color_of = |value: f64| legend[ids.partition_point(|&id| id < value)].1;

@@ -173,3 +173,20 @@ pub(crate) fn write_vtk_cell_scalars(grid: &VtkGrid, path: &Path) -> anyhow::Res
 
     std::fs::write(path, out).with_context(|| format!("writing {}", path.display()))
 }
+
+/// Distinct values in `data`, sorted ascending. Shared by the materials viewer's legend
+/// coloring and the material-ID/zone-ID detection in `preproc::materials` — both need the
+/// same "what distinct IDs does this scalar field contain" enumeration. Deduplicates by bit
+/// pattern rather than `==` (irrelevant in practice since these fields are integer-valued,
+/// but avoids `f64`'s lack of `Eq`/`Hash`).
+pub(crate) fn distinct_sorted_values(data: &[f64]) -> Vec<f64> {
+    let mut seen = std::collections::HashSet::new();
+    let mut values: Vec<f64> = Vec::new();
+    for &v in data {
+        if seen.insert(v.to_bits()) {
+            values.push(v);
+        }
+    }
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    values
+}
