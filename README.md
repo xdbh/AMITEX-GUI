@@ -61,7 +61,7 @@ whichever one is missing.
 1. Download the latest build for your OS from the [Releases page](../../releases).
 2. **macOS**: right-click the app → **Open**. If Gatekeeper still blocks it, go to
    **System Settings → Privacy & Security** and click **Open Anyway** — first run only.
-3. **Linux**: `chmod +x AMITEX-GUI` if it isn't already executable.
+3. **Linux**: `chmod +x AMITEX-GUI` if it isn't already executable, then run it: `./AMITEX-GUI`.
 
 ### Windows
 
@@ -71,6 +71,9 @@ instructions above.
 1. Install WSL if needed: `wsl --install -d Ubuntu` (elevated PowerShell, then reboot if
    prompted).
 2. Inside WSL, follow [Requirements](#requirements) and [Linux / macOS](#linux--macos) above.
+3. Launch it from the WSL terminal (`./AMITEX-GUI`) — WSL has no file manager to double-click
+   it from, and Windows Explorer can't run a Linux binary. WSLg forwards the window to your
+   Windows desktop automatically.
 
 ## Building from Source
 
