@@ -8,7 +8,7 @@ to run a specific micromechanics workflow without hand-editing XML or shell scri
 
 - [Current Capabilities](#current-capabilities)
 - [Requirements](#requirements)
-- [Running from a Release Binary](#running-from-a-release-binary)
+- [Quick Start](#quick-start)
   - [Windows: run it via WSL](#windows-run-it-via-wsl)
 - [Building from Source](#building-from-source)
 
@@ -48,27 +48,17 @@ The app only orchestrates these; it doesn't build or bundle AMITEX_FFTP itself.
 `amitex_fftp` has no native Windows build (it's Linux/MPI-only) — Windows users need
 [WSL](#windows-run-it-via-wsl) to get it running.
 
-## Running from a Release Binary
+## Quick Start
 
-If you just want to use the app, download the latest build for your OS from the
-[Releases page](../../releases) — no Rust toolchain or build step required.
-
-Downloaded binaries aren't signed with a paid platform certificate, so each OS shows a one-time
-trust warning on first launch — this is normal, not a broken download:
-
-- **macOS**: the release `.app` is ad-hoc signed (no paid Developer ID), so Gatekeeper shows
-  "unidentified developer" rather than refusing outright. Right-click the app → **Open** (or
-  System Settings → Privacy & Security → **Open Anyway**) once, then it launches normally.
-  Also, reading files under `Desktop`, `Documents`, `Downloads`, or iCloud Drive triggers a
-  one-time system permission prompt per app — normal macOS behavior, not a bug.
-- **Windows**: SmartScreen will show "Windows protected your PC" on first run of the unsigned
-  `.exe`. Click **More info** → **Run anyway**. Note that the GUI itself runs fine natively on
-  Windows, but `amitex_fftp` does not — see [below](#windows-run-it-via-wsl).
-- **Linux**: the extracted binary should already be executable; if not, `chmod +x AMITEX-GUI`
-  before running it.
-
-Once it's running, point it at your `amitex_fftp` binary, material-ID VTK, `mat.xml`, and
-algorithm XML (see [Requirements](#requirements)) and run the homogenization.
+1. Download the latest build for your OS from the [Releases page](../../releases).
+2. **macOS**: right-click the app → **Open**. If Gatekeeper still blocks it, go to
+   **System Settings → Privacy & Security** and click **Open Anyway** — first run only.
+3. **Windows**: on the SmartScreen prompt, click **More info → Run anyway** — first run only.
+   (`amitex_fftp` itself doesn't run natively on Windows — see
+   [WSL](#windows-run-it-via-wsl).)
+4. **Linux**: `chmod +x AMITEX-GUI` if it isn't already executable.
+5. Point the app at your `amitex_fftp` binary, material-ID VTK, `mat.xml`, and algorithm XML
+   (see [Requirements](#requirements)) and run the homogenization.
 
 ### Windows: run it via WSL
 
