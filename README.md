@@ -43,8 +43,6 @@ The app only orchestrates AMITEX_FFTP; it doesn't build or bundle it. You need, 
 - `mpirun`:
   - macOS: `brew install open-mpi`
   - Linux / WSL: `sudo apt install openmpi-bin`
-- A material-ID VTK file (per-voxel material/phase assignment — AMITEX's `-nm` input).
-- `mat.xml` (material properties) and an algorithm XML.
 
 **Linux / WSL only** — running a downloaded binary (as opposed to building it) also needs these
 runtime libraries, which a minimal WSL Ubuntu image may not have preinstalled:
