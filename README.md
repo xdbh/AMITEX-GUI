@@ -9,7 +9,8 @@ to run a specific micromechanics workflow without hand-editing XML or shell scri
 - [Current Capabilities](#current-capabilities)
 - [Requirements](#requirements)
 - [Quick Start](#quick-start)
-  - [Windows: run it via WSL](#windows-run-it-via-wsl)
+  - [Linux / macOS](#linux--macos)
+  - [Windows](#windows)
 - [Building from Source](#building-from-source)
 
 ## Current Capabilities
@@ -46,21 +47,20 @@ You need to already have, separately:
 The app only orchestrates these; it doesn't build or bundle AMITEX_FFTP itself.
 
 `amitex_fftp` has no native Windows build (it's Linux/MPI-only) — Windows users need
-[WSL](#windows-run-it-via-wsl) to get it running.
+[WSL](#windows) to get it running.
 
 ## Quick Start
+
+### Linux / macOS
 
 1. Download the latest build for your OS from the [Releases page](../../releases).
 2. **macOS**: right-click the app → **Open**. If Gatekeeper still blocks it, go to
    **System Settings → Privacy & Security** and click **Open Anyway** — first run only.
-3. **Windows**: on the SmartScreen prompt, click **More info → Run anyway** — first run only.
-   (`amitex_fftp` itself doesn't run natively on Windows — see
-   [WSL](#windows-run-it-via-wsl).)
-4. **Linux**: `chmod +x AMITEX-GUI` if it isn't already executable.
-5. Point the app at your `amitex_fftp` binary, material-ID VTK, `mat.xml`, and algorithm XML
+3. **Linux**: `chmod +x AMITEX-GUI` if it isn't already executable.
+4. Point the app at your `amitex_fftp` binary, material-ID VTK, `mat.xml`, and algorithm XML
    (see [Requirements](#requirements)) and run the homogenization.
 
-### Windows: run it via WSL
+### Windows
 
 `amitex_fftp` itself is Linux/MPI-native — there's no Windows build of the solver. The practical
 path on Windows is to build and run everything (GUI, `amitex_fftp`, `mpirun`) inside WSL2,
