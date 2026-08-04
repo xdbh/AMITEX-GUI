@@ -58,6 +58,9 @@ cp packaging/Info.plist AMITEX-GUI.app/Contents/Info.plist
   `amitex_fftp`'s own `AMITEX_PATH` environment variable to resolve their shared library. The
   app derives this automatically from the `amitex_fftp` binary path you select, provided it
   follows AMITEX's documented `<root>/libAmitex/bin/amitex_fftp` layout.
+- **Windows**: `amitex_fftp` has no native Windows build (it's Linux/MPI-only), so the practical
+  path is running the whole stack inside WSL2 rather than the native Windows `.exe` — see
+  [`WSL_GUIDE.md`](WSL_GUIDE.md) for setup, GUI passthrough (WSLg), and `mpirun` gotchas.
 
 ### First run, if you downloaded a release binary
 

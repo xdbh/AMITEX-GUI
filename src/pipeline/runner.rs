@@ -16,10 +16,26 @@ pub(crate) struct PipelineConfig {
     /// The AMITEX material-ID map (`-nm`) — same file for all 6 cases, referenced by
     /// absolute path rather than copied into each case directory.
     pub(crate) material_id_vtk: PathBuf,
+    /// The AMITEX zone-ID map (`-nz`) — zones *within* a material (e.g. per-grain
+    /// orientation). Optional: AMITEX assumes one zone per material if omitted.
+    pub(crate) zone_id_vtk: Option<PathBuf>,
     pub(crate) mat_xml: PathBuf,
     pub(crate) algo_xml: PathBuf,
+    /// Resolved by sourcing `ConfigTab::env_script` (see `resolve_amitex_binary`), not
+    /// browsed-to directly — the binary's location is whatever that install's own
+    /// env-setup script says it is.
     pub(crate) amitex_path: PathBuf,
     pub(crate) mpirun_path: PathBuf,
+    /// The full environment captured by sourcing the user's `env_amitex.sh`-equivalent
+    /// script (see `source_env_script`), applied verbatim to the `mpirun` child. Covers
+    /// whatever that script sets up — `AMITEX_PATH`, `PATH`, `LD_LIBRARY_PATH` for
+    /// FFTW/OpenMPI/MFront shared libs, etc. — rather than this GUI trying to guess a single
+    /// `AMITEX_PATH` value from the binary's directory layout.
+    pub(crate) env_vars: Vec<(String, String)>,
+    /// Raw extra `amitex_fftp` CLI tokens appended verbatim after the standard flags — an
+    /// escape hatch for AMITEX options this GUI has no dedicated field for (present or
+    /// future), so using them doesn't need a GUI/Rust code change.
+    pub(crate) extra_args: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -50,18 +66,93 @@ fn prepare_case(config: &PipelineConfig, index: usize) -> anyhow::Result<CaseRun
     Ok(CaseRun { label, dir })
 }
 
-/// Derives `AMITEX_PATH` from the `amitex_fftp` binary path, per AMITEX's documented layout
-/// `$AMITEX_PATH/libAmitex/bin/amitex_fftp`. Needed because native material behaviors (an
-/// empty `Lib=""` in `mat.xml`) resolve their `.so` as `$AMITEX_PATH/libAmitex/src/materiaux/
-/// libUmatAmitex.so` — with `AMITEX_PATH` unset, that `dlopen` fails and every rank aborts.
-/// Returns `None` if the binary isn't laid out as expected, rather than guessing wrong.
-fn amitex_path_env(amitex_path: &Path) -> Option<PathBuf> {
-    let bin_dir = amitex_path.parent()?;
-    let lib_amitex_dir = bin_dir.parent()?;
-    if bin_dir.file_name()? != "bin" || lib_amitex_dir.file_name()? != "libAmitex" {
-        return None;
+/// Runs the user's `env_amitex.sh`-equivalent script through a shell's `.` (source) command
+/// and captures the resulting environment — mirroring what the legacy `run.sh` did
+/// (`source $CODE_PATH/env_amitex.sh`) before invoking `amitex_fftp`. This is the correct way
+/// to pick up whatever `PATH`/`LD_LIBRARY_PATH`/`AMITEX_PATH`/etc. that script establishes
+/// (for the compiler, OpenMPI, FFTW, MFront libs it was built against), rather than this GUI
+/// trying to reverse-engineer a single `AMITEX_PATH` value from the binary's own directory
+/// layout, which only covers one specific install convention and says nothing about
+/// `LD_LIBRARY_PATH`. `$1`/`sh` avoid needing to shell-escape `script`'s path into a `-c`
+/// string.
+pub(crate) fn source_env_script(script: &Path) -> anyhow::Result<Vec<(String, String)>> {
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(". \"$1\" && env")
+        .arg("sh")
+        .arg(script)
+        .output()
+        .with_context(|| format!("running a shell to source {}", script.display()))?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "sourcing {} failed: {}",
+            script.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
-    Some(lib_amitex_dir.parent()?.to_path_buf())
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect())
+}
+
+/// Locates `amitex_fftp` from an environment captured by `source_env_script`: prefers
+/// AMITEX's own documented layout (`$AMITEX_PATH/libAmitex/bin/amitex_fftp`) if the script set
+/// `AMITEX_PATH`, otherwise searches `PATH` the way a shell would — since a script that just
+/// prepends the AMITEX `bin` directory to `PATH`, without setting `AMITEX_PATH` itself, is
+/// just as valid.
+pub(crate) fn resolve_amitex_binary(env_vars: &[(String, String)]) -> Option<PathBuf> {
+    if let Some((_, amitex_path)) = env_vars.iter().find(|(k, _)| k == "AMITEX_PATH") {
+        let candidate = Path::new(amitex_path).join("libAmitex/bin/amitex_fftp");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    let (_, path_var) = env_vars.iter().find(|(k, _)| k == "PATH")?;
+    std::env::split_paths(path_var).map(|dir| dir.join("amitex_fftp")).find(|p| p.is_file())
+}
+
+/// Best-effort search for an MPI launcher, for the "Auto" button next to the `mpirun` field.
+/// Checks a handful of well-known fixed install locations first — a GUI app launched via
+/// Finder/an IDE (rather than an interactive shell) often has a much smaller `PATH` than the
+/// shell that built it, so `/opt/homebrew/bin` etc. may not be on it even when the binary is
+/// right there — then falls back to searching this process's own `PATH`. Returns `None`
+/// rather than guessing wrong; the manual "Browse…" button is always still available.
+///
+/// Confirmed to work against real installs on macOS (Homebrew) and should hold on Linux
+/// (system package managers install to the same handful of standard prefixes), but is
+/// untested on Windows — MPI there is more commonly `mpiexec.exe` from a specific vendor
+/// install (Microsoft MPI/Intel MPI) rather than something living on `PATH` by convention, so
+/// the fixed-location guesses for Windows are a starting point, not a verified fix.
+pub(crate) fn find_mpirun() -> Option<PathBuf> {
+    let names: &[&str] = if cfg!(windows) { &["mpiexec.exe", "mpirun.exe"] } else { &["mpirun", "mpiexec"] };
+
+    let fixed_dirs: &[&str] = if cfg!(target_os = "macos") {
+        &["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"]
+    } else if cfg!(target_os = "linux") {
+        &["/usr/bin", "/usr/local/bin", "/opt/openmpi/bin"]
+    } else if cfg!(windows) {
+        &[
+            "C:\\Program Files\\Microsoft MPI\\Bin",
+            "C:\\Program Files (x86)\\Microsoft MPI\\Bin",
+        ]
+    } else {
+        &[]
+    };
+    for dir in fixed_dirs {
+        for name in names {
+            let candidate = Path::new(dir).join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    let path_var = std::env::var("PATH").ok()?;
+    std::env::split_paths(&path_var)
+        .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
+        .find(|p| p.is_file())
 }
 
 fn std_path(case: &CaseRun) -> PathBuf {
@@ -137,7 +228,108 @@ fn postprocess_case(case: &CaseRun, tx: &Sender<RunEvent>) {
     let _ = tx.send(RunEvent::CaseOutput { case: case.label.clone(), line });
 }
 
+/// Checks `path` exists before it's handed to `Command::new`/spawned as an arg. Without this,
+/// a bad `mpirun`/`amitex_fftp` path fails identically for all 6 cases with the OS's bare
+/// `No such file or directory (os error 2)` — which doesn't say *which* path was wrong — and
+/// only the last case's copy of that message survives in the GUI (`state.fatal` keeps just the
+/// most recent `Fatal` event), so five of the six failures give no information at all.
+fn check_binary_exists(path: &Path, label: &str) -> anyhow::Result<()> {
+    if !path.is_file() {
+        anyhow::bail!("{label} not found: {}", path.display());
+    }
+    Ok(())
+}
+
+/// Actually attempts to open `path`, rather than just checking `Path::exists`/permission bits:
+/// on macOS a file can exist and look readable by its Unix mode yet still be denied at open()
+/// time by Gatekeeper quarantine, a stray ACL, or the file-system sandbox (the exact failure
+/// mode that motivated this check) — the only reliable test is to actually try.
+fn check_readable(path: &Path) -> Result<(), String> {
+    std::fs::File::open(path)
+        .map(|_| ())
+        .map_err(|err| format!("not readable ({err})"))
+}
+
+/// Same as `check_readable`, plus (on Unix) the executable bit, since a readable-but-not-
+/// executable `amitex_fftp`/`mpirun` fails at spawn time with a less obvious error.
+fn check_executable(path: &Path) -> Result<(), String> {
+    check_readable(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(path)
+            .map(|m| m.permissions().mode())
+            .map_err(|err| format!("could not stat ({err})"))?;
+        if mode & 0o111 == 0 {
+            return Err("not executable (missing +x permission)".to_string());
+        }
+    }
+    Ok(())
+}
+
+/// Pre-flight check run before any case directory is created or process spawned: verifies
+/// every file/binary the run needs can actually be opened (and, for the two binaries,
+/// executed). Returns one formatted line per problem, empty if everything checks out — so
+/// the GUI can show every broken path at once in a single popup, rather than the run failing
+/// 6 times with the same opaque OS error and only the last failure's message surviving.
+pub(crate) fn check_permissions(
+    material_id_vtk: &Path,
+    zone_id_vtk: Option<&Path>,
+    mat_xml: &Path,
+    algo_xml: &Path,
+    env_script: &Path,
+    amitex_path: &Path,
+    mpirun_path: &Path,
+    env_vars: &[(String, String)],
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    let mut readable_inputs = vec![
+        ("Material ID VTK (-nm)", material_id_vtk),
+        ("Material XML (-m)", mat_xml),
+        ("Algorithm XML (-a)", algo_xml),
+        ("env_amitex.sh (or equivalent)", env_script),
+    ];
+    if let Some(zone_id_vtk) = zone_id_vtk {
+        readable_inputs.push(("Zone ID VTK (-nz)", zone_id_vtk));
+    }
+    for (label, path) in readable_inputs {
+        if let Err(reason) = check_readable(path) {
+            problems.push(format!("{label}: {} — {reason}", path.display()));
+        }
+    }
+    for (label, path) in [("amitex_fftp binary", amitex_path), ("mpirun binary", mpirun_path)] {
+        if let Err(reason) = check_executable(path) {
+            problems.push(format!("{label}: {} — {reason}", path.display()));
+        }
+    }
+    // Not one of the GUI-configured paths, but AMITEX resolves it implicitly at runtime for
+    // native material behaviors (empty `Lib=""` in mat.xml) — and it's exactly the file that
+    // turned out to be blocked (Gatekeeper quarantine/ACL) while the top-level binary itself
+    // opened fine, so it needs its own check rather than being invisible until the run is
+    // already 6-for-6 failed. Derived from the sourced `AMITEX_PATH`, not guessed from the
+    // binary's own directory layout.
+    if let Some((_, amitex_path_root)) = env_vars.iter().find(|(k, _)| k == "AMITEX_PATH") {
+        let native_lib = Path::new(amitex_path_root).join("libAmitex/src/materiaux/libUmatAmitex.so");
+        if native_lib.is_file() {
+            if let Err(reason) = check_readable(&native_lib) {
+                problems.push(format!(
+                    "Native material behavior library: {} — {reason}",
+                    native_lib.display()
+                ));
+            }
+        }
+    }
+    problems
+}
+
 fn run_pipeline(config: PipelineConfig, tx: Sender<RunEvent>) {
+    if let Err(err) = check_binary_exists(&config.mpirun_path, "mpirun binary")
+        .and_then(|()| check_binary_exists(&config.amitex_path, "amitex_fftp binary"))
+    {
+        let _ = tx.send(RunEvent::Fatal(err.to_string()));
+        return;
+    }
+
     let mut cases = Vec::with_capacity(6);
     for index in 0..6 {
         match prepare_case(&config, index) {
@@ -149,17 +341,6 @@ fn run_pipeline(config: PipelineConfig, tx: Sender<RunEvent>) {
         }
     }
 
-    let amitex_path_env = amitex_path_env(&config.amitex_path);
-    if amitex_path_env.is_none() {
-        let _ = tx.send(RunEvent::CaseOutput {
-            case: "setup".to_string(),
-            line: "Note: amitex_fftp isn't laid out as <root>/libAmitex/bin/amitex_fftp, so \
-                   AMITEX_PATH wasn't set — native material behaviors (empty Lib=\"\" in \
-                   mat.xml) may fail to load."
-                .to_string(),
-        });
-    }
-
     // Cases run one after another, not concurrently: each `mpirun amitex_fftp` call
     // already claims all available ranks/cores on its own, so running 6 at once would
     // just make them contend for the same CPU rather than finish sooner.
@@ -167,19 +348,24 @@ fn run_pipeline(config: PipelineConfig, tx: Sender<RunEvent>) {
     for case in &cases {
         let _ = tx.send(RunEvent::CaseStarted { case: case.label.clone() });
         let mut command = Command::new(&config.mpirun_path);
-        if let Some(amitex_path_env) = &amitex_path_env {
-            command.env("AMITEX_PATH", amitex_path_env);
+        // Whatever `env_amitex.sh` (or equivalent) set up — AMITEX_PATH, PATH,
+        // LD_LIBRARY_PATH for FFTW/OpenMPI/MFront, etc. — applied verbatim, matching what
+        // sourcing that script in a real shell before running `mpirun` would give it.
+        command.envs(config.env_vars.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+        command.arg(&config.amitex_path).arg("-nm").arg(&config.material_id_vtk);
+        if let Some(zone_id_vtk) = &config.zone_id_vtk {
+            command.arg("-nz").arg(zone_id_vtk);
         }
         let spawned = command
-            .arg(&config.amitex_path)
-            .arg("-nm")
-            .arg(&config.material_id_vtk)
             .arg("-m")
             .arg(&config.mat_xml)
             .args(["-c", "char.xml"])
             .arg("-a")
             .arg(&config.algo_xml)
             .args(["-s", &format!("_{}", case.label)])
+            // Escape hatch for AMITEX flags this GUI doesn't model explicitly (present or
+            // future) — see `PipelineConfig::extra_args`.
+            .args(&config.extra_args)
             .current_dir(&case.dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -188,7 +374,11 @@ fn run_pipeline(config: PipelineConfig, tx: Sender<RunEvent>) {
         let mut child = match spawned {
             Ok(child) => child,
             Err(err) => {
-                let _ = tx.send(RunEvent::Fatal(format!("{}: {err}", case.label)));
+                let _ = tx.send(RunEvent::Fatal(format!(
+                    "{}: failed to spawn {}: {err}",
+                    case.label,
+                    config.mpirun_path.display()
+                )));
                 let _ = tx.send(RunEvent::CaseFinished { case: case.label.clone(), success: false });
                 all_ok = false;
                 continue;
