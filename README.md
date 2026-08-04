@@ -4,7 +4,15 @@ A native desktop GUI (Rust, [egui](https://github.com/emilk/egui)/[eframe](https
 that wraps [AMITEX_FFTP](https://amitexfftp.github.io/AMITEX/), an FFT-based mechanics solver,
 to run a specific micromechanics workflow without hand-editing XML or shell scripts.
 
-## What it does today
+## Table of Contents
+
+- [Current Capabilities](#current-capabilities)
+- [Requirements](#requirements)
+- [Running from a Release Binary](#running-from-a-release-binary)
+  - [Windows: run it via WSL](#windows-run-it-via-wsl)
+- [Building from Source](#building-from-source)
+
+## Current Capabilities
 
 Right now this app does **one thing**: elastic homogenization of a two-phase (or generally
 material-ID-mapped) periodic microstructure.
@@ -17,7 +25,9 @@ solves — one per canonical unit-strain direction in Voigt notation (`xx`, `yy`
 2. Runs `mpirun amitex_fftp` once per direction against your material-ID VTK map, `mat.xml`, and
    algorithm XML,
 3. Parses each case's `.std` output, assembles the 6x6 stiffness/compliance matrices, and derives
-   `E`, `ν`, `G`, and the Zener anisotropy factor.
+   `E`, `ν`, `G`, and the Zener anisotropy factor,
+4. Renders the material-ID VTK map as a rotatable 3D voxel mesh so you can sanity-check the
+   input before running.
 
 That's the whole feature set. There's no visualization of stress/strain fields, no run
 history/config persistence, no per-material zone (`-nz`) support, and no other simulation modes
@@ -28,13 +38,105 @@ history/config persistence, no per-material zone (`-nz`) support, and no other s
 You need to already have, separately:
 
 - A built [`amitex_fftp`](https://amitexfftp.github.io/AMITEX/general/install.html) binary and
-  an MPI `mpirun`.
+  an MPI `mpirun`. Follow AMITEX's own install docs for this:
+  https://amitexfftp.github.io/AMITEX/general/install.html
 - A material-ID VTK file (per-voxel material/phase assignment — AMITEX's `-nm` input).
 - `mat.xml` (material properties) and an algorithm XML.
 
 The app only orchestrates these; it doesn't build or bundle AMITEX_FFTP itself.
 
-## Building / running
+`amitex_fftp` has no native Windows build (it's Linux/MPI-only) — Windows users need
+[WSL](#windows-run-it-via-wsl) to get it running.
+
+## Running from a Release Binary
+
+If you just want to use the app, download the latest build for your OS from the
+[Releases page](../../releases) — no Rust toolchain or build step required.
+
+Downloaded binaries aren't signed with a paid platform certificate, so each OS shows a one-time
+trust warning on first launch — this is normal, not a broken download:
+
+- **macOS**: the release `.app` is ad-hoc signed (no paid Developer ID), so Gatekeeper shows
+  "unidentified developer" rather than refusing outright. Right-click the app → **Open** (or
+  System Settings → Privacy & Security → **Open Anyway**) once, then it launches normally.
+  Also, reading files under `Desktop`, `Documents`, `Downloads`, or iCloud Drive triggers a
+  one-time system permission prompt per app — normal macOS behavior, not a bug.
+- **Windows**: SmartScreen will show "Windows protected your PC" on first run of the unsigned
+  `.exe`. Click **More info** → **Run anyway**. Note that the GUI itself runs fine natively on
+  Windows, but `amitex_fftp` does not — see [below](#windows-run-it-via-wsl).
+- **Linux**: the extracted binary should already be executable; if not, `chmod +x AMITEX-GUI`
+  before running it.
+
+Once it's running, point it at your `amitex_fftp` binary, material-ID VTK, `mat.xml`, and
+algorithm XML (see [Requirements](#requirements)) and run the homogenization.
+
+### Windows: run it via WSL
+
+`amitex_fftp` itself is Linux/MPI-native — there's no Windows build of the solver. The practical
+path on Windows is to build and run everything (GUI, `amitex_fftp`, `mpirun`) inside WSL2,
+rather than running the native Windows `.exe` and trying to point it at a solver binary that
+lives in a separate WSL filesystem.
+
+**1. Install WSL2 with GUI support (WSLg).** You need Windows 11, or Windows 10 21H2+ with WSLg
+backported. From an elevated PowerShell:
+
+```
+wsl --install -d Ubuntu
+```
+
+This installs WSL2, an Ubuntu distro, and WSLg (bundled with WSL2 since ~2021), which gives you
+Wayland/X11 forwarding out of the box — no manual X server (VcXsrv, Xming, etc.) needed. Reboot
+if prompted, then launch "Ubuntu" from the Start menu to finish first-time user setup.
+
+Confirm GUI passthrough works before going further:
+
+```
+sudo apt update && sudo apt install -y x11-apps
+xeyes
+```
+
+If a window with eyes that track your cursor appears, WSLg is working. If nothing appears, fix
+WSLg first (Windows Update, or `wsl --update` from PowerShell) — nothing below will render
+without it.
+
+**2. Install `amitex_fftp` and its dependencies inside WSL,** following AMITEX's own install
+docs: https://amitexfftp.github.io/AMITEX/general/install.html. Do this inside the WSL
+filesystem (e.g. `~/amitex`, not `/mnt/c/...`) — building on the Windows-side 9p-mounted
+filesystem is noticeably slower and some build scripts trip on the permission/symlink
+differences. `mpirun` is installed as part of that (`libopenmpi-dev openmpi-bin` or similar,
+per AMITEX's docs).
+
+**3. Get AMITEX-GUI running inside WSL** — either download the Linux release binary from the
+[Releases page](../../releases) and `chmod +x` it, or [build from source](#building-from-source)
+inside WSL the same way you would on native Linux.
+
+The materials viewer renders its 3D voxel mesh through OpenGL (egui's Glow backend). WSLg
+usually gives you the host GPU via DXGI/D3D12 passthrough; if that's unavailable it falls back
+to `llvmpipe` (software rendering via Mesa), which works but is visibly slower when rotating
+large meshes. Check which one you're getting with:
+
+```
+sudo apt install -y mesa-utils
+glxinfo | grep "OpenGL renderer"
+```
+
+`llvmpipe` in that output means software rendering — the app still works, just don't expect the
+3D view to be smooth on large voxel grids. If `glxinfo` shows neither your actual GPU nor
+`llvmpipe`, update your Windows GPU driver (WSLg's GPU passthrough is exposed through it).
+
+**File paths and `mpirun` notes:**
+
+- **Windows files from WSL**: your `C:\` drive is at `/mnt/c/...`. Point the GUI's file pickers
+  there if your VTK/XML inputs live on the Windows side, though for speed it's better to keep
+  them in the WSL filesystem (`~/...`).
+- **WSL files from Windows**: `\\wsl$\Ubuntu\home\<user>\...` in Explorer, if you need to move
+  files the other way.
+- **`mpirun` refusing to run as root**: if your WSL user ended up as `root` (uncommon with
+  `wsl --install`, more common in minimal/container-style setups), OpenMPI refuses to launch by
+  default. Fix the user rather than passing `--allow-run-as-root` — the GUI always invokes
+  `mpirun` without that flag.
+
+## Building from Source
 
 ```
 cargo build --release
@@ -50,32 +152,16 @@ cp target/release/AMITEX-GUI AMITEX-GUI.app/Contents/MacOS/AMITEX-GUI
 cp packaging/Info.plist AMITEX-GUI.app/Contents/Info.plist
 ```
 
-### Platform notes
+On Linux (and WSL), building needs a few native dev packages first — see the
+`Install Linux build dependencies` step in
+[`.github/workflows/release.yml`](.github/workflows/release.yml) for the exact list.
 
-- **macOS**: reading files under `Desktop`, `Documents`, `Downloads`, or iCloud Drive triggers a
-  one-time system permission prompt per app (this is normal macOS behavior, not a bug).
-- **AMITEX_PATH**: native material behaviors (an empty `Lib=""` in `mat.xml`) need
-  `amitex_fftp`'s own `AMITEX_PATH` environment variable to resolve their shared library. The
-  app derives this automatically from the `amitex_fftp` binary path you select, provided it
-  follows AMITEX's documented `<root>/libAmitex/bin/amitex_fftp` layout.
-- **Windows**: `amitex_fftp` has no native Windows build (it's Linux/MPI-only), so the practical
-  path is running the whole stack inside WSL2 rather than the native Windows `.exe` — see
-  [`WSL_GUIDE.md`](WSL_GUIDE.md) for setup, GUI passthrough (WSLg), and `mpirun` gotchas.
+**AMITEX_PATH**: native material behaviors (an empty `Lib=""` in `mat.xml`) need
+`amitex_fftp`'s own `AMITEX_PATH` environment variable to resolve their shared library. The app
+derives this automatically from the `amitex_fftp` binary path you select, provided it follows
+AMITEX's documented `<root>/libAmitex/bin/amitex_fftp` layout.
 
-### First run, if you downloaded a release binary
-
-Downloaded binaries aren't signed with a paid platform certificate, so each OS shows a one-time
-trust warning on first launch — this is normal, not a broken download:
-
-- **macOS**: the release `.app` is ad-hoc signed (no paid Developer ID), so Gatekeeper shows
-  "unidentified developer" rather than refusing outright. Right-click the app → **Open** (or
-  System Settings → Privacy & Security → **Open Anyway**) once, then it launches normally.
-- **Windows**: SmartScreen will show "Windows protected your PC" on first run of the unsigned
-  `.exe`. Click **More info** → **Run anyway**.
-- **Linux**: the extracted binary should already be executable; if not, `chmod +x AMITEX-GUI`
-  before running it.
-
-## Releases
+### Releases
 
 Pushing a version tag (`vX.Y.Z`) triggers [`.github/workflows/release.yml`](.github/workflows/release.yml),
 which builds release binaries for macOS (Apple Silicon), Linux (x86_64), and Windows (x86_64)
