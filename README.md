@@ -58,10 +58,11 @@ whichever one is missing.
 
 ### Linux / macOS
 
-1. Download the latest build for your OS from the [Releases page](../../releases).
-2. **macOS**: right-click the app → **Open**. If Gatekeeper still blocks it, go to
+1. Install the [Requirements](#requirements).
+2. Download the latest build for your OS from the [Releases page](../../releases).
+3. **macOS**: right-click the app → **Open**. If Gatekeeper still blocks it, go to
    **System Settings → Privacy & Security** and click **Open Anyway** — first run only.
-3. **Linux**: `chmod +x AMITEX-GUI` if it isn't already executable, then run it: `./AMITEX-GUI`.
+4. **Linux**: `chmod +x AMITEX-GUI` if it isn't already executable, then run it: `./AMITEX-GUI`.
 
 ### Windows
 
