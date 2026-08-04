@@ -1,8 +1,10 @@
 name: Release
 
-# Builds AMITEX-GUI for macOS (Apple Silicon), Linux (x86_64), and Windows (x86_64)
-# whenever a version tag (e.g. v0.1.0) is pushed, and attaches the packaged binaries
-# to a GitHub Release.
+# Builds AMITEX-GUI for macOS (Apple Silicon) and Linux (x86_64) whenever a version tag
+# (e.g. v0.1.0) is pushed, and attaches the packaged binaries to a GitHub Release.
+#
+# No Windows target: amitex_fftp is Linux/MPI-only, so Windows users run the whole stack
+# (including this GUI) inside WSL and use the Linux build — see the README.
 
 on:
   push:
@@ -24,9 +26,6 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             name: AMITEX-GUI-linux-x86_64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            name: AMITEX-GUI-windows-x86_64
 
     runs-on: ${{ matrix.os }}
 
@@ -81,14 +80,6 @@ jobs:
           cp "target/${{ matrix.target }}/release/AMITEX-GUI" dist/
           chmod +x dist/AMITEX-GUI
           tar -czf "${{ matrix.name }}.tar.gz" -C dist AMITEX-GUI
-
-      - name: Package (Windows zip)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path dist
-          Copy-Item "target/${{ matrix.target }}/release/AMITEX-GUI.exe" dist/
-          Compress-Archive -Path dist/AMITEX-GUI.exe -DestinationPath "${{ matrix.name }}.zip"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

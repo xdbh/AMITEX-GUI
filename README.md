@@ -36,18 +36,25 @@ history/config persistence, no per-material zone (`-nz`) support, and no other s
 
 ## Requirements
 
-You need to already have, separately:
+The app only orchestrates AMITEX_FFTP; it doesn't build or bundle it. You need, separately:
 
-- A built [`amitex_fftp`](https://amitexfftp.github.io/AMITEX/general/install.html) binary and
-  an MPI `mpirun`. Follow AMITEX's own install docs for this:
-  https://amitexfftp.github.io/AMITEX/general/install.html
+- A built [`amitex_fftp`](https://amitexfftp.github.io/AMITEX/general/install.html) binary
+  (no native Windows build — Windows users run it inside [WSL](#windows)).
+- `mpirun`:
+  - macOS: `brew install open-mpi`
+  - Linux / WSL: `sudo apt install openmpi-bin`
 - A material-ID VTK file (per-voxel material/phase assignment — AMITEX's `-nm` input).
 - `mat.xml` (material properties) and an algorithm XML.
 
-The app only orchestrates these; it doesn't build or bundle AMITEX_FFTP itself.
+**Linux / WSL only** — running a downloaded binary (as opposed to building it) also needs these
+runtime libraries, which a minimal WSL Ubuntu image may not have preinstalled:
 
-`amitex_fftp` has no native Windows build (it's Linux/MPI-only) — Windows users need
-[WSL](#windows) to get it running.
+```
+sudo apt install libgtk-3-0 libxcb-render0 libxcb-shape0 libxcb-xfixes0 libxkbcommon0 libgl1
+```
+
+If you skip this, the app will fail to launch with a "shared library not found" error naming
+whichever one is missing.
 
 ## Quick Start
 
@@ -60,15 +67,12 @@ The app only orchestrates these; it doesn't build or bundle AMITEX_FFTP itself.
 
 ### Windows
 
-`amitex_fftp` is Linux/MPI-only, so run everything inside WSL2 rather than the native `.exe`.
+`amitex_fftp` is Linux/MPI-only — run it, `mpirun`, and this GUI all inside WSL, using the Linux
+instructions above.
 
-1. `wsl --install -d Ubuntu` in an elevated PowerShell, then reboot if prompted. (Windows 11, or
-   Windows 10 21H2+, for WSLg GUI support.)
-2. Inside WSL, install `amitex_fftp` and `mpirun` per
-   [AMITEX's install docs](https://amitexfftp.github.io/AMITEX/general/install.html).
-3. Inside WSL, download the Linux build from the [Releases page](../../releases) and
-   `chmod +x` it (or [build from source](#building-from-source)) — WSLg forwards the GUI window
-   automatically.
+1. Install WSL if needed: `wsl --install -d Ubuntu` (elevated PowerShell, then reboot if
+   prompted).
+2. Inside WSL, follow [Requirements](#requirements) and [Linux / macOS](#linux--macos) above.
 
 ## Building from Source
 
@@ -98,5 +102,5 @@ AMITEX's documented `<root>/libAmitex/bin/amitex_fftp` layout.
 ### Releases
 
 Pushing a version tag (`vX.Y.Z`) triggers [`.github/workflows/release.yml`](.github/workflows/release.yml),
-which builds release binaries for macOS (Apple Silicon), Linux (x86_64), and Windows (x86_64)
-and attaches them to a GitHub Release.
+which builds release binaries for macOS (Apple Silicon) and Linux (x86_64) and attaches them to
+a GitHub Release. No Windows build — see [Windows](#windows) above.
