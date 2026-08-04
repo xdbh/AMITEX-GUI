@@ -70,9 +70,8 @@ instructions above.
 
 1. Install WSL if needed: `wsl --install -d Ubuntu` (elevated PowerShell, then reboot if
    prompted).
-2. Inside WSL, follow [Requirements](#requirements) and [Linux / macOS](#linux--macos) above.
-3. Launch it from the WSL terminal (`./AMITEX-GUI`) — WSL has no file manager to double-click
-   it from, and Windows Explorer can't run a Linux binary. WSLg forwards the window to your
+2. Inside WSL, install the [Requirements](#requirements) (Linux versions).
+3. Inside WSL: `chmod +x AMITEX-GUI` then `./AMITEX-GUI` — WSLg forwards the window to your
    Windows desktop automatically.
 
 ## Building from Source
