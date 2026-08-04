@@ -1,6 +1,7 @@
 use crate::pipeline;
 pub(crate) use crate::pipeline::SimulationModes;
 use crate::pipeline::runner::{PipelineConfig, RunEvent};
+use crate::postproc;
 use crate::postproc::moduli::{self, ElasticModuli};
 use crate::viewer3d;
 use directories::{ProjectDirs, UserDirs};
@@ -66,6 +67,12 @@ struct RunState {
     moduli: Option<Result<ElasticModuli, String>>,
     fatal: Option<String>,
     done: bool,
+    /// Where AMITEX wrote this run's case directories (`PipelineConfig::run_dir`) — kept
+    /// here too (not just consumed by the pipeline) so "Save" knows what to copy.
+    run_dir: PathBuf,
+    /// Set once the user clicks "Save" and a destination is picked; `Ok` holds the folder
+    /// actually written to.
+    save_result: Option<Result<PathBuf, String>>,
 }
 
 /// The subset of `ConfigTab` that's persisted across launches via eframe's storage. Covers
@@ -83,6 +90,9 @@ struct PersistedConfig {
     mpirun_path: String,
     extra_args: String,
     last_dir: Option<PathBuf>,
+    /// Folder last picked in the "Save" dialog, so the next save starts there rather than
+    /// always falling back to the Downloads folder.
+    last_save_dir: Option<PathBuf>,
 }
 
 impl AmitexGui {
@@ -104,6 +114,7 @@ impl AmitexGui {
                 mpirun_path: persisted.mpirun_path,
                 extra_args: persisted.extra_args,
                 last_dir: persisted.last_dir,
+                last_save_dir: persisted.last_save_dir,
                 ..Default::default()
             },
             gl_ctx: cc.gl.clone(),
@@ -188,7 +199,7 @@ impl AmitexGui {
         let run_dir = dirs.data_dir().join("runs").join(&self.config_tab.name);
 
         let rx = pipeline::runner::spawn_pipeline(PipelineConfig {
-            run_dir,
+            run_dir: run_dir.clone(),
             material_id_vtk,
             zone_id_vtk,
             mat_xml,
@@ -210,6 +221,8 @@ impl AmitexGui {
             moduli: None,
             fatal: None,
             done: false,
+            run_dir,
+            save_result: None,
         });
     }
 
@@ -257,7 +270,7 @@ impl AmitexGui {
             ui.colored_label(egui::Color32::RED, err);
         }
 
-        let Some(state) = &self.run_state else {
+        let Some(state) = &mut self.run_state else {
             ui.label("No run yet.");
             return;
         };
@@ -291,9 +304,49 @@ impl AmitexGui {
                 ui.label(format!("nu = {:.4}", moduli.nu));
                 ui.label(format!("G = {:.4}", moduli.g));
                 ui.label(format!("Zener A = {:.4}", moduli.zener));
+                render_matrix(ui, "matrix_c", "Stiffness matrix C", &moduli.c);
+                render_matrix(ui, "matrix_s", "Compliance matrix S", &moduli.s);
             }
             Some(Err(err)) => {
                 ui.colored_label(egui::Color32::RED, format!("Homogenization failed: {err}"));
+            }
+            None => {}
+        }
+
+        ui.separator();
+        // Enabled once the run has stopped producing events, success or failure — a
+        // failed run's logs/partial output are still worth saving for debugging.
+        if ui.add_enabled(state.done, egui::Button::new("Save…")).clicked() {
+            let start_dir = self
+                .config_tab
+                .last_save_dir
+                .clone()
+                .or_else(|| UserDirs::new().and_then(|dirs| dirs.download_dir().map(Path::to_path_buf)))
+                .or_else(home_dir);
+
+            let mut dialog = FileDialog::new();
+            if let Some(dir) = start_dir {
+                dialog = dialog.set_directory(dir);
+            }
+            if let Some(dest_parent) = dialog.pick_folder() {
+                self.config_tab.last_save_dir = Some(dest_parent.clone());
+                let input = postproc::save::SaveInput {
+                    run_dir: &state.run_dir,
+                    name: &self.config_tab.name,
+                    simulation_mode: &self.config_tab.simulation_mode,
+                    moduli: state.moduli.as_ref(),
+                    log: &state.log,
+                };
+                state.save_result =
+                    Some(postproc::save::save_run(&dest_parent, input).map_err(|err| err.to_string()));
+            }
+        }
+        match &state.save_result {
+            Some(Ok(path)) => {
+                ui.colored_label(egui::Color32::GREEN, format!("Saved to {}", path.display()));
+            }
+            Some(Err(err)) => {
+                ui.colored_label(egui::Color32::RED, format!("Save failed: {err}"));
             }
             None => {}
         }
@@ -666,6 +719,22 @@ fn path_field(
     });
 }
 
+/// Renders a 6x6 matrix (the stiffness/compliance results) as a labeled grid, matching
+/// what the legacy `runs2moduli.py` printed to the terminal. `id` must be unique among
+/// grids on the same panel — `egui::Grid` uses it as the widget ID, and both matrices
+/// are shown side by side in the same results section.
+fn render_matrix(ui: &mut egui::Ui, id: &str, title: &str, m: &[[f64; 6]; 6]) {
+    ui.label(title);
+    egui::Grid::new(id).striped(true).show(ui, |ui| {
+        for row in m {
+            for value in row {
+                ui.monospace(format!("{value:>9.4}"));
+            }
+            ui.end_row();
+        }
+    });
+}
+
 /// A full-width expandable section with a divider above and below the header,
 /// styled like a Photoshop/Blender-style collapsible panel. Built from the
 /// stock `CollapsingHeader` widget inside a full-width `Frame` rather than
@@ -722,6 +791,9 @@ struct ConfigTab {
     /// Directory the last "Browse…" file dialog was opened/picked in, so the next dialog
     /// (for any field) starts there rather than always falling back to the home directory.
     last_dir: Option<PathBuf>,
+    /// Folder the last "Save" dialog picked, so the next save starts there rather than
+    /// always falling back to the Downloads folder.
+    last_save_dir: Option<PathBuf>,
 }
 
 impl ConfigTab {
@@ -829,6 +901,7 @@ impl eframe::App for AmitexGui {
                 mpirun_path: self.config_tab.mpirun_path.clone(),
                 extra_args: self.config_tab.extra_args.clone(),
                 last_dir: self.config_tab.last_dir.clone(),
+                last_save_dir: self.config_tab.last_save_dir.clone(),
             },
         );
     }
