@@ -19,8 +19,20 @@ pub(crate) struct SaveInput<'a> {
 /// `dest_parent`, alongside a `summary.txt` (simulation type + derived moduli/matrices)
 /// and the GUI's own captured log. Returns the folder actually written to.
 pub(crate) fn save_run(dest_parent: &Path, input: SaveInput) -> anyhow::Result<PathBuf> {
-    let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-    let dest = dest_parent.join(format!("{}_{timestamp}", input.name));
+    let now = chrono::Local::now();
+    // An un-customized run name is already today's date (see `ConfigTab::ui`'s
+    // `%Y%m%d` auto-fill), so appending the full date-time timestamp would print the date
+    // twice (e.g. `20260804_20260804-214553`). Drop the redundant date prefix in that case;
+    // a custom name still gets the full date-time so saves on different days stay
+    // distinguishable.
+    let today = now.format("%Y%m%d").to_string();
+    let time = now.format("%H%M%S");
+    let dest_name = if input.name == today {
+        format!("{today}-{time}")
+    } else {
+        format!("{}_{today}-{time}", input.name)
+    };
+    let dest = dest_parent.join(dest_name);
     fs::create_dir_all(&dest).with_context(|| format!("creating {}", dest.display()))?;
 
     copy_dir_recursive(input.run_dir, &dest)
