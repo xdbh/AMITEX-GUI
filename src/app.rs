@@ -875,7 +875,8 @@ impl ConfigTab {
         );
 
         let material_id_vtk_path = self.material_id_vtk.clone();
-        self.materials.sync(&material_id_vtk_path);
+        let zone_id_vtk_path = self.zone_id_vtk.clone();
+        self.materials.sync(&material_id_vtk_path, &zone_id_vtk_path);
         section(ui, "Materials", true, |ui| {
             self.materials.ui(ui);
         });
@@ -924,45 +925,80 @@ impl ConfigTab {
 #[derive(Default)]
 struct MaterialsEditor {
     entries: Vec<MaterialEntry>,
-    /// The `material_id_vtk` text last seen, so a reload only happens when it actually
-    /// changes (mirrors `MaterialsTab::last_seen_path`).
+    /// The `material_id_vtk`/`zone_id_vtk` text last seen, so a reload only happens when
+    /// either actually changes (mirrors `MaterialsTab::last_seen_path`).
     last_seen_path: String,
+    last_seen_zone_path: String,
     error: Option<String>,
 }
 
 impl MaterialsEditor {
-    fn sync(&mut self, material_id_vtk: &str) {
-        if material_id_vtk == self.last_seen_path {
+    fn sync(&mut self, material_id_vtk: &str, zone_id_vtk: &str) {
+        if material_id_vtk == self.last_seen_path && zone_id_vtk == self.last_seen_zone_path {
             return;
         }
+        let material_changed = material_id_vtk != self.last_seen_path;
         self.last_seen_path = material_id_vtk.to_string();
-        self.entries.clear();
+        self.last_seen_zone_path = zone_id_vtk.to_string();
         self.error = None;
 
         let Some(path) = non_empty_path(material_id_vtk) else {
+            self.entries.clear();
             return;
         };
-        let grid = match crate::postproc::vtkio::read_vtk_cell_scalars(&path) {
+        let material_grid = match crate::postproc::vtkio::read_vtk_cell_scalars(&path) {
+            Ok(grid) => grid,
+            Err(err) => {
+                self.entries.clear();
+                self.error = Some(err.to_string());
+                return;
+            }
+        };
+
+        if material_changed {
+            self.entries = match preproc::materials::detect_material_ids(&material_grid) {
+                Ok(ids) => ids
+                    .into_iter()
+                    .map(|(vtk_id, num_m)| MaterialEntry {
+                        num_m,
+                        vtk_id,
+                        num_zones: 1,
+                        law: LawKind::default(),
+                        isotropic: Default::default(),
+                        orthotropic: Default::default(),
+                    })
+                    .collect(),
+                Err(err) => {
+                    self.entries.clear();
+                    self.error = Some(err.to_string());
+                    return;
+                }
+            };
+        }
+
+        // Zone IDs are optional (AMITEX assumes one zone per material if `-nz` is omitted) —
+        // only recompute per-material zone counts when a zone-ID VTK is actually selected.
+        let Some(zone_path) = non_empty_path(zone_id_vtk) else {
+            for entry in &mut self.entries {
+                entry.num_zones = 1;
+            }
+            return;
+        };
+        let zone_grid = match crate::postproc::vtkio::read_vtk_cell_scalars(&zone_path) {
             Ok(grid) => grid,
             Err(err) => {
                 self.error = Some(err.to_string());
                 return;
             }
         };
-        match preproc::materials::detect_material_ids(&grid) {
-            Ok(ids) => {
-                self.entries = ids
-                    .into_iter()
-                    .map(|(vtk_id, num_m)| MaterialEntry {
-                        num_m,
-                        vtk_id,
-                        law: LawKind::default(),
-                        isotropic: Default::default(),
-                        orthotropic: Default::default(),
-                    })
-                    .collect();
+        for entry in &mut self.entries {
+            match preproc::materials::detect_zone_ids(&material_grid, &zone_grid, entry.vtk_id) {
+                Ok(zones) => entry.num_zones = zones.len(),
+                Err(err) => {
+                    self.error = Some(format!("material {} (VTK id {}): {err}", entry.num_m, entry.vtk_id));
+                    return;
+                }
             }
-            Err(err) => self.error = Some(err.to_string()),
         }
     }
 
@@ -981,6 +1017,81 @@ impl MaterialsEditor {
     }
 }
 
+/// Renders one scalar coefficient: a label, a "per zone" checkbox (only shown when the
+/// material actually has more than one zone — with a single zone there's nothing to toggle),
+/// and either one `DragValue` (`Constant`) or one per zone (`PerZone`).
+fn render_zone_value(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut preproc::materials::ZoneValue,
+    num_zones: usize,
+    speed: f64,
+    range: Option<std::ops::RangeInclusive<f64>>,
+) {
+    use preproc::materials::ZoneValue;
+    value.resize(num_zones);
+    ui.horizontal(|ui| {
+        ui.label(label);
+        if num_zones > 1 {
+            let mut per_zone = value.is_per_zone();
+            if ui.checkbox(&mut per_zone, "per zone").changed() {
+                value.set_per_zone(per_zone, num_zones);
+            }
+        }
+        match value {
+            ZoneValue::Constant(v) => {
+                let mut drag = egui::DragValue::new(v).speed(speed);
+                if let Some(range) = range.clone() {
+                    drag = drag.range(range);
+                }
+                ui.add(drag);
+            }
+            ZoneValue::PerZone(vals) => {
+                for (zone, v) in vals.iter_mut().enumerate() {
+                    ui.label(format!("z{}:", zone + 1));
+                    let mut drag = egui::DragValue::new(v).speed(speed);
+                    if let Some(range) = range.clone() {
+                        drag = drag.range(range);
+                    }
+                    ui.add(drag);
+                }
+            }
+        }
+    });
+}
+
+/// Same as `render_zone_value`, but for a 3-component vector coefficient (`e1`/`e2`) — the
+/// whole vector toggles together, and per-zone entries get one row each (a horizontal triple
+/// wouldn't fit alongside every other zone's).
+fn render_zone_vec3(ui: &mut egui::Ui, label: &str, value: &mut preproc::materials::ZoneVec3, num_zones: usize) {
+    use preproc::materials::ZoneVec3;
+    value.resize(num_zones);
+    ui.horizontal(|ui| {
+        ui.label(label);
+        if num_zones > 1 {
+            let mut per_zone = value.is_per_zone();
+            if ui.checkbox(&mut per_zone, "per zone").changed() {
+                value.set_per_zone(per_zone, num_zones);
+            }
+        }
+        if let ZoneVec3::Constant(v) = value {
+            for comp in v.iter_mut() {
+                ui.add(egui::DragValue::new(comp).speed(0.01));
+            }
+        }
+    });
+    if let ZoneVec3::PerZone(vecs) = value {
+        for (zone, v) in vecs.iter_mut().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(format!("  zone {}:", zone + 1));
+                for comp in v.iter_mut() {
+                    ui.add(egui::DragValue::new(comp).speed(0.01));
+                }
+            });
+        }
+    }
+}
+
 /// One material's law picker plus whichever coefficient fields its selected law needs.
 fn render_material_entry(ui: &mut egui::Ui, entry: &mut MaterialEntry) {
     egui::Frame::default()
@@ -988,7 +1099,13 @@ fn render_material_entry(ui: &mut egui::Ui, entry: &mut MaterialEntry) {
         .inner_margin(egui::Margin::same(6))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(format!("Material {} (VTK id {}):", entry.num_m, entry.vtk_id));
+                ui.label(format!(
+                    "Material {} (VTK id {}, {} zone{}):",
+                    entry.num_m,
+                    entry.vtk_id,
+                    entry.num_zones,
+                    if entry.num_zones == 1 { "" } else { "s" }
+                ));
                 egui::ComboBox::from_id_salt(("material_law", entry.num_m))
                     .selected_text(entry.law.label())
                     .show_ui(ui, |ui| {
@@ -1000,49 +1117,34 @@ fn render_material_entry(ui: &mut egui::Ui, entry: &mut MaterialEntry) {
 
             match entry.law {
                 LawKind::ElasticIsotropic => {
-                    ui.horizontal(|ui| {
-                        ui.label("E (Young's modulus):");
-                        ui.add(egui::DragValue::new(&mut entry.isotropic.e).speed(1e6));
-                        ui.label("nu (Poisson's ratio):");
-                        ui.add(
-                            egui::DragValue::new(&mut entry.isotropic.nu)
-                                .speed(0.01)
-                                .range(-1.0..=0.5),
-                        );
-                    });
+                    render_zone_value(ui, "E (Young's modulus):", &mut entry.isotropic.e, entry.num_zones, 1e6, None);
+                    render_zone_value(
+                        ui,
+                        "nu (Poisson's ratio):",
+                        &mut entry.isotropic.nu,
+                        entry.num_zones,
+                        0.01,
+                        Some(-1.0..=0.5),
+                    );
                 }
                 LawKind::ElasticOrthotropic => {
                     let c = &mut entry.orthotropic;
                     ui.label("Stiffness matrix (local basis):");
-                    egui::Grid::new(("orthotropic_stiffness", entry.num_m)).show(ui, |ui| {
-                        for (label, value) in [
-                            ("C11", &mut c.c11),
-                            ("C12", &mut c.c12),
-                            ("C13", &mut c.c13),
-                            ("C22", &mut c.c22),
-                            ("C23", &mut c.c23),
-                            ("C33", &mut c.c33),
-                            ("C44", &mut c.c44),
-                            ("C55", &mut c.c55),
-                            ("C66", &mut c.c66),
-                        ] {
-                            ui.label(label);
-                            ui.add(egui::DragValue::new(value).speed(1e6));
-                        }
-                        ui.end_row();
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("e1 (local basis vector):");
-                        for v in &mut c.e1 {
-                            ui.add(egui::DragValue::new(v).speed(0.01));
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("e2 (local basis vector):");
-                        for v in &mut c.e2 {
-                            ui.add(egui::DragValue::new(v).speed(0.01));
-                        }
-                    });
+                    for (label, value) in [
+                        ("C11", &mut c.c11),
+                        ("C12", &mut c.c12),
+                        ("C13", &mut c.c13),
+                        ("C22", &mut c.c22),
+                        ("C23", &mut c.c23),
+                        ("C33", &mut c.c33),
+                        ("C44", &mut c.c44),
+                        ("C55", &mut c.c55),
+                        ("C66", &mut c.c66),
+                    ] {
+                        render_zone_value(ui, label, value, entry.num_zones, 1e6, None);
+                    }
+                    render_zone_vec3(ui, "e1 (local basis vector):", &mut c.e1, entry.num_zones);
+                    render_zone_vec3(ui, "e2 (local basis vector):", &mut c.e2, entry.num_zones);
                 }
                 other => {
                     ui.colored_label(
@@ -1072,11 +1174,15 @@ fn render_algorithm_settings(ui: &mut egui::Ui, settings: &mut AlgorithmSettings
     });
 
     ui.horizontal(|ui| {
-        let mut use_default = settings.convergence_criterion.is_none();
-        ui.checkbox(&mut use_default, "Convergence criterion: Default (1e-4)");
-        if use_default {
-            settings.convergence_criterion = None;
-        } else {
+        ui.label("Convergence criterion:");
+        let mut is_custom = settings.convergence_criterion.is_some();
+        egui::ComboBox::from_id_salt("convergence_criterion_mode")
+            .selected_text(if is_custom { "Custom" } else { "Default (1e-4)" })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut is_custom, false, "Default (1e-4)");
+                ui.selectable_value(&mut is_custom, true, "Custom");
+            });
+        if is_custom {
             let value = settings.convergence_criterion.get_or_insert(1e-4);
             ui.add(
                 egui::DragValue::new(value)
@@ -1084,6 +1190,8 @@ fn render_algorithm_settings(ui: &mut egui::Ui, settings: &mut AlgorithmSettings
                     .range(1e-12..=1e-3)
                     .custom_formatter(|v, _| format!("{v:.2e}")),
             );
+        } else {
+            settings.convergence_criterion = None;
         }
     });
 
