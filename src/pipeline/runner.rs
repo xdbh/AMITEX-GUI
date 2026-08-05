@@ -58,9 +58,16 @@ fn prepare_case(config: &PipelineConfig, index: usize) -> anyhow::Result<CaseRun
     let label = case_label(index);
     let dir = config.run_dir.join(&label);
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    // mat.xml/algo.xml aren't copied in: like material_id_vtk, they're identical across all
-    // 6 cases, so amitex_fftp is pointed at the shared file directly via absolute path. Only
-    // char.xml actually differs per case, so it alone is written into the case directory.
+    // mat.xml/algo.xml are copied into every case directory (even though they're identical
+    // across all 6 cases) so they can be passed to amitex_fftp as bare relative filenames,
+    // like char.xml. Passing them by absolute path instead used to break on macOS: run_dir
+    // lives under `~/Library/Application Support/...`, and AMITEX's Fortran XML reader (FoX)
+    // resolves the path as a URI, which fails outright on the unescaped space in "Application
+    // Support" (`ERROR(FoX) ... not a valid URI`).
+    std::fs::copy(&config.mat_xml, dir.join("mat.xml"))
+        .with_context(|| format!("copying mat.xml into {}", dir.display()))?;
+    std::fs::copy(&config.algo_xml, dir.join("algo.xml"))
+        .with_context(|| format!("copying algo.xml into {}", dir.display()))?;
     std::fs::write(dir.join("char.xml"), generate_load_xml(index))
         .with_context(|| format!("writing char.xml into {}", dir.display()))?;
     Ok(CaseRun { label, dir })
@@ -356,11 +363,9 @@ fn run_pipeline(config: PipelineConfig, tx: Sender<RunEvent>) {
             command.arg("-nz").arg(zone_id_vtk);
         }
         let spawned = command
-            .arg("-m")
-            .arg(&config.mat_xml)
+            .args(["-m", "mat.xml"])
             .args(["-c", "char.xml"])
-            .arg("-a")
-            .arg(&config.algo_xml)
+            .args(["-a", "algo.xml"])
             .args(["-s", &format!("_{}", case.label)])
             // Escape hatch for AMITEX flags this GUI doesn't model explicitly (present or
             // future) — see `PipelineConfig::extra_args`.
